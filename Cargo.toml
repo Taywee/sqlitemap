@@ -1,6 +1,10 @@
 [package]
 name = "sqlitemap"
 version = "0.0.1"
+description = "An alternative map implementation, backed by a sqlite database"
+license = "MIT"
+readme = "README.md"
+license-file = "LICENSE"
 authors = ["Taylor C. Richberger <Taywee@gmx.com>"]
 
 [dependencies]
