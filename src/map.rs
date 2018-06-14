@@ -1,4 +1,3 @@
-use std::os::raw::c_int;
 use std::marker::PhantomData;
 
 use rusqlite::Row;
@@ -14,7 +13,7 @@ pub struct SqliteMap<'a, GetKey, GetValue, PutKey, PutValue> {
     put_key: PhantomData<PutKey>,
     put_value: PhantomData<PutValue>,
 
-    insert_key_value: Statement<'a>,
+    replace_key_value: Statement<'a>,
     select_value: Statement<'a>,
     select_key: Statement<'a>,
     select_keys: Statement<'a>,
@@ -28,112 +27,99 @@ impl<'a, GetKey, GetValue, PutKey, PutValue> SqliteMap<'a, GetKey, GetValue, Put
           GetValue: FromSql, 
           PutKey: ToSql,
           PutValue: ToSql {
-    pub fn new(connection: &'a Connection, tablename: &str) -> Self {
+    pub fn new(connection: &'a Connection, tablename: &str, keytype: &str, valuetype: &str) -> Result<Self> {
         connection.execute(&format!("
             CREATE TABLE IF NOT EXISTS {} (
                 id INTEGER PRIMARY KEY,
-                key TEXT UNIQUE NOT NULL,
-                value TEXT NOT NULL
-            )", tablename), &[]).unwrap();
-        let insert_key_value = connection.prepare(&format!("INSERT OR REPLACE INTO {} (key, value) VALUES (?, ?)", tablename)).unwrap();
-        let select_value = connection.prepare(&format!("SELECT value FROM {} WHERE key=?", tablename)).unwrap();
-        let select_key = connection.prepare(&format!("SELECT 1 FROM {} WHERE key=?", tablename)).unwrap();
-        let select_keys = connection.prepare(&format!("SELECT key FROM {}", tablename)).unwrap();
-        let delete_key = connection.prepare(&format!("DELETE FROM {} WHERE key=?", tablename)).unwrap();
-        let select_count = connection.prepare(&format!("SELECT COUNT(*) FROM {}", tablename)).unwrap();
-        let select_one = connection.prepare(&format!("SELECT 1 FROM {}", tablename)).unwrap();
+                key {} UNIQUE NOT NULL,
+                value {} NOT NULL
+            )", tablename, keytype, valuetype), &[])?;
+        let replace_key_value = connection.prepare(&format!("INSERT OR REPLACE INTO {} (key, value) VALUES (?, ?)", tablename))?;
+        let select_value = connection.prepare(&format!("SELECT value FROM {} WHERE key=?", tablename))?;
+        let select_key = connection.prepare(&format!("SELECT 1 FROM {} WHERE key=?", tablename))?;
+        let select_keys = connection.prepare(&format!("SELECT key FROM {}", tablename))?;
+        let delete_key = connection.prepare(&format!("DELETE FROM {} WHERE key=?", tablename))?;
+        let select_count = connection.prepare(&format!("SELECT COUNT(*) FROM {}", tablename))?;
+        let select_one = connection.prepare(&format!("SELECT 1 FROM {}", tablename))?;
 
-        Self {
+        Ok(Self {
             get_key: PhantomData,
             get_value: PhantomData,
             put_key: PhantomData,
             put_value: PhantomData,
 
-            insert_key_value,
+            replace_key_value,
             select_value,
             select_key,
             select_keys,
             delete_key,
             select_count,
             select_one,
-        }
+        })
     }
-    pub fn insert(&mut self, key: PutKey, value: PutValue) -> Result<c_int> {
-        self.insert_key_value.execute(&[&key, &value])
+    pub fn insert(&mut self, key: PutKey, value: PutValue) -> Result<Option<GetValue>> {
+        let mut rows = self.select_value.query(&[&key])?;
+        let output = match rows.next() {
+            Some(row) => row?.get_checked(0)?,
+            None => None,
+        };
+        self.replace_key_value.execute(&[&key, &value])?;
+        Ok(output)
     }
 
-    pub fn get(&mut self, key: PutKey) -> Option<GetValue> {
-        let mut rows = match self.select_value.query(&[&key]) {
-            Ok(rows) => rows,
-            _ => return None,
-        };
+    pub fn get(&mut self, key: PutKey) -> Result<Option<GetValue>> {
+        let mut rows = self.select_value.query(&[&key])?;
         let row = match rows.next() {
-            Some(Ok(row)) => row,
-            _ => return None,
+            Some(row) => row?,
+            None => return Ok(None),
         };
-        match row.get_checked(0) {
-            Ok(value) => Some(value),
-            _ => None,
-        }
+        Ok(Some(row.get_checked(0)?))
     }
 
-    pub fn keys(&mut self) -> MappedRows<impl FnMut(&Row) -> GetKey> {
-        self.select_keys.query_map(&[], |row| row.get(0)).unwrap()
+    pub fn keys(&mut self) -> Result<MappedRows<impl FnMut(&Row) -> GetKey>> {
+        self.select_keys.query_map(&[], |row| row.get(0))
     }
 
-    pub fn contains_key(&mut self, key: PutKey) -> bool {
-        let mut rows = match self.select_key.query(&[&key]) {
-            Ok(rows) => rows,
-            _ => return false,
-        };
-        match rows.next() {
+    pub fn contains_key(&mut self, key: PutKey) -> Result<bool> {
+        let mut rows = self.select_key.query(&[&key])?;
+        Ok(match rows.next() {
             Some(Ok(_)) => true,
-            _ => false,
-        }
+            Some(Err(x)) => return Err(x),
+            None => false,
+        })
     }
 
-    pub fn len(&mut self) -> usize {
-        let mut rows = match self.select_count.query(&[]) {
-            Ok(rows) => rows,
-            _ => return 0,
-        };
+    pub fn len(&mut self) -> Result<usize> {
+        let mut rows = self.select_count.query(&[])?;
         let row = match rows.next() {
-            Some(Ok(row)) => row,
-            _ => return 0,
+            Some(row) => row?,
+            None => return Ok(0),
         };
-        let size: isize = match row.get_checked(0) {
-            Ok(value) => value,
-            _ => 0,
-        };
-        size as usize
+        let size: isize = row.get_checked(0)?;
+        Ok(size as usize)
     }
 
-    pub fn remove(&mut self, key: PutKey) -> Option<GetValue> {
-        let mut rows = match self.select_value.query(&[&key]) {
-            Ok(rows) => rows,
-            _ => return None,
-        };
+    pub fn remove(&mut self, key: PutKey) -> Result<Option<GetValue>> {
+        let mut rows = self.select_value.query(&[&key])?;
         let row = match rows.next() {
-            Some(Ok(row)) => row,
-            _ => return None,
+            Some(row) => row?,
+            None => return Ok(None),
         };
         match row.get_checked(0) {
             Ok(value) => {
-                self.delete_key.execute(&[&key]).unwrap();
-                Some(value)
+                self.delete_key.execute(&[&key])?;
+                Ok(Some(value))
             },
-            _ => None,
+            Err(x) => Err(x)
         }
     }
 
-    pub fn is_empty(&mut self) -> bool {
-        let mut rows = match self.select_one.query(&[]) {
-            Ok(rows) => rows,
-            _ => return true,
-        };
-        match rows.next() {
-            Some(Ok(row)) => false,
-            _ => return true,
-        }
+    pub fn is_empty(&mut self) -> Result<bool> {
+        let mut rows = self.select_one.query(&[])?;
+        Ok(match rows.next() {
+            Some(Ok(_)) => false,
+            Some(Err(x)) => return Err(x),
+            None => true,
+        })
     }
 }
