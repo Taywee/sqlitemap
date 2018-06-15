@@ -1,3 +1,12 @@
+#[cfg(test)]
+extern crate serde;
+#[cfg(test)]
+extern crate flate2;
+#[cfg(test)]
+extern crate serde_json;
+#[cfg(test)]
+#[macro_use]
+extern crate serde_derive;
 extern crate rusqlite;
 
 mod map;
@@ -6,13 +15,13 @@ pub use map::SqliteMap;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite;
     use rusqlite::Connection;
     use rusqlite::Error;
+    use rusqlite::types::{ToSql, FromSql, ValueRef, FromSqlError, FromSqlResult, ToSqlOutput};
 
     #[test]
     fn it_works() {
-        // type inference lets us omit an explicit type signature (which
-        // would be `HashMap<&str, &str>` in this example).
         let connection = Connection::open_in_memory().unwrap();
         let mut book_reviews: SqliteMap<String, String, &str, &str> = SqliteMap::new(&connection, "map", "TEXT", "TEXT").unwrap();
 
@@ -45,5 +54,88 @@ mod tests {
         assert_eq!(x.unwrap(), ["Adventures of Huckleberry Finn", "Grimms' Fairy Tales", "Pride and Prejudice"]);
 
         assert_eq!(book_reviews.len().unwrap(), 3);
+    }
+
+    use std::cmp::{PartialEq, Eq};
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+    struct Foo {
+        x: i32,
+        y: String,
+    }
+
+    impl ToSql for Foo {
+        fn to_sql(&self) -> rusqlite::Result<ToSqlOutput> {
+            let string = serde_json::to_string(self).unwrap();
+            Ok(ToSqlOutput::from(string))
+        }
+    }
+
+    impl FromSql for Foo {
+        fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+            match value {
+                ValueRef::Text(s) => serde_json::from_str(s),
+                ValueRef::Blob(b) => serde_json::from_slice(b),
+                _ => return Err(FromSqlError::InvalidType),
+            }.map_err(|err| FromSqlError::Other(Box::new(err)))
+        }
+    }
+
+
+    #[test]
+    fn json_output() {
+        let connection = Connection::open_in_memory().unwrap();
+        let mut book_reviews: SqliteMap<String, Foo, &str, Foo> = SqliteMap::new(&connection, "map", "TEXT", "TEXT").unwrap();
+        let foo = Foo{
+            x: 8,
+            y: String::from("This is a test string"),
+        };
+
+        assert_eq!(book_reviews.insert("foo", foo.clone()).unwrap(), None);
+        assert_eq!(book_reviews.insert("foo", foo.clone()).unwrap(), Some(foo));
+    }
+
+    use std::io::prelude::*;
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
+    use flate2::read::ZlibDecoder;
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+    struct ZipFoo(Foo);
+
+    impl ToSql for ZipFoo {
+        fn to_sql(&self) -> rusqlite::Result<ToSqlOutput> {
+            let mut e = ZlibEncoder::new(Vec::new(), Compression::default());
+            let string = serde_json::to_vec(self).unwrap();
+            e.write_all(&string);
+            Ok(ToSqlOutput::from(e.finish().unwrap()))
+        }
+    }
+
+    impl FromSql for ZipFoo {
+        fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+            let mut s = String::new();
+            match value {
+                ValueRef::Blob(b) => {
+                    let mut z = ZlibDecoder::new(b);
+                    z.read_to_string(&mut s);
+                    serde_json::from_str(&s)
+                },
+                _ => return Err(FromSqlError::InvalidType),
+            }.map_err(|err| FromSqlError::Other(Box::new(err)))
+        }
+    }
+
+    #[test]
+    fn zip_json_output() {
+        let connection = Connection::open_in_memory().unwrap();
+        let mut book_reviews: SqliteMap<String, ZipFoo, &str, ZipFoo> = SqliteMap::new(&connection, "map", "BLOB", "BLOB").unwrap();
+        let foo = Foo{
+            x: 8,
+            y: String::from("This is a test string"),
+        };
+
+        assert_eq!(book_reviews.insert("foo", ZipFoo(foo.clone())).unwrap(), None);
+        assert_eq!(book_reviews.insert("foo", ZipFoo(foo.clone())).unwrap(), Some(ZipFoo(foo)));
     }
 }
