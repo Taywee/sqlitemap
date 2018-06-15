@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use rusqlite::Row;
 use rusqlite::MappedRows;
 use rusqlite::Connection;
@@ -7,12 +5,7 @@ use rusqlite::Statement;
 use rusqlite::Result;
 use rusqlite::types::{ToSql, FromSql};
 
-pub struct SqliteMap<'a, GetKey, GetValue, PutKey, PutValue> {
-    get_key: PhantomData<GetKey>,
-    get_value: PhantomData<GetValue>,
-    put_key: PhantomData<PutKey>,
-    put_value: PhantomData<PutValue>,
-
+pub struct SqliteMap<'a> {
     replace_key_value: Statement<'a>,
     select_value: Statement<'a>,
     select_key: Statement<'a>,
@@ -22,11 +15,7 @@ pub struct SqliteMap<'a, GetKey, GetValue, PutKey, PutValue> {
     select_one: Statement<'a>,
 }
 
-impl<'a, GetKey, GetValue, PutKey, PutValue> SqliteMap<'a, GetKey, GetValue, PutKey, PutValue>
-    where GetKey: FromSql,
-          GetValue: FromSql, 
-          PutKey: ToSql,
-          PutValue: ToSql {
+impl<'a> SqliteMap<'a> {
     pub fn new(connection: &'a Connection, tablename: &str, keytype: &str, valuetype: &str) -> Result<Self> {
         connection.execute(&format!("
             CREATE TABLE IF NOT EXISTS {} (
@@ -43,11 +32,6 @@ impl<'a, GetKey, GetValue, PutKey, PutValue> SqliteMap<'a, GetKey, GetValue, Put
         let select_one = connection.prepare(&format!("SELECT 1 FROM {}", tablename))?;
 
         Ok(Self {
-            get_key: PhantomData,
-            get_value: PhantomData,
-            put_key: PhantomData,
-            put_value: PhantomData,
-
             replace_key_value,
             select_value,
             select_key,
@@ -57,18 +41,23 @@ impl<'a, GetKey, GetValue, PutKey, PutValue> SqliteMap<'a, GetKey, GetValue, Put
             select_one,
         })
     }
-    pub fn insert(&mut self, key: PutKey, value: PutValue) -> Result<Option<GetValue>> {
-        let mut rows = self.select_value.query(&[&key])?;
+
+    pub fn insert<R>(&mut self, key: &ToSql, value: &ToSql) -> Result<Option<R>>
+        where R: FromSql {
+
+        let mut rows = self.select_value.query(&[key])?;
         let output = match rows.next() {
             Some(row) => row?.get_checked(0)?,
             None => None,
         };
-        self.replace_key_value.execute(&[&key, &value])?;
+        self.replace_key_value.execute(&[key, value])?;
         Ok(output)
     }
 
-    pub fn get(&mut self, key: PutKey) -> Result<Option<GetValue>> {
-        let mut rows = self.select_value.query(&[&key])?;
+    pub fn get<R>(&mut self, key: &ToSql) -> Result<Option<R>>
+        where R: FromSql {
+
+        let mut rows = self.select_value.query(&[key])?;
         let row = match rows.next() {
             Some(row) => row?,
             None => return Ok(None),
@@ -76,12 +65,14 @@ impl<'a, GetKey, GetValue, PutKey, PutValue> SqliteMap<'a, GetKey, GetValue, Put
         Ok(Some(row.get_checked(0)?))
     }
 
-    pub fn keys(&mut self) -> Result<MappedRows<impl FnMut(&Row) -> GetKey>> {
+    pub fn keys<R>(&mut self) -> Result<MappedRows<impl FnMut(&Row) -> R>>
+        where R: FromSql {
+
         self.select_keys.query_map(&[], |row| row.get(0))
     }
 
-    pub fn contains_key(&mut self, key: PutKey) -> Result<bool> {
-        let mut rows = self.select_key.query(&[&key])?;
+    pub fn contains_key(&mut self, key: &ToSql) -> Result<bool> {
+        let mut rows = self.select_key.query(&[key])?;
         Ok(match rows.next() {
             Some(Ok(_)) => true,
             Some(Err(x)) => return Err(x),
@@ -99,15 +90,17 @@ impl<'a, GetKey, GetValue, PutKey, PutValue> SqliteMap<'a, GetKey, GetValue, Put
         Ok(size as usize)
     }
 
-    pub fn remove(&mut self, key: PutKey) -> Result<Option<GetValue>> {
-        let mut rows = self.select_value.query(&[&key])?;
+    pub fn remove<R>(&mut self, key: &ToSql) -> Result<Option<R>>
+        where R: FromSql {
+
+        let mut rows = self.select_value.query(&[key])?;
         let row = match rows.next() {
             Some(row) => row?,
             None => return Ok(None),
         };
         match row.get_checked(0) {
             Ok(value) => {
-                self.delete_key.execute(&[&key])?;
+                self.delete_key.execute(&[key])?;
                 Ok(Some(value))
             },
             Err(x) => Err(x)

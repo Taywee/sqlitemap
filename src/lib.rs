@@ -23,40 +23,38 @@ mod tests {
     #[test]
     fn it_works() {
         let connection = Connection::open_in_memory().unwrap();
-        let mut book_reviews: SqliteMap<String, String, &str, &str> = SqliteMap::new(&connection, "map", "TEXT", "TEXT").unwrap();
+        let mut book_reviews = SqliteMap::new(&connection, "map", "TEXT", "TEXT").unwrap();
 
         assert!(book_reviews.is_empty().unwrap());
 
         // review some books.
-        book_reviews.insert("Adventures of Huckleberry Finn",    "My favorite book.").unwrap();
-        book_reviews.insert("Grimms' Fairy Tales",               "Masterpiece.").unwrap();
-        book_reviews.insert("The Adventures of Sherlock Holmes", "Eye lyked it alot.").unwrap();
-        assert_eq!(book_reviews.get("The Adventures of Sherlock Holmes").unwrap(), Some(String::from("Eye lyked it alot.")));
-        assert_eq!(book_reviews.get("The Adventures of Somebody Else").unwrap(), None);
+        assert_eq!(book_reviews.insert::<String>(&"Adventures of Huckleberry Finn",    &"My favorite book.").unwrap(), None);
+        assert_eq!(book_reviews.insert::<String>(&"Grimms' Fairy Tales",               &"Masterpiece.").unwrap(), None);
+        assert_eq!(book_reviews.insert::<String>(&"The Adventures of Sherlock Holmes", &"Eye lyked it alot.").unwrap(), None);
+        assert_eq!(book_reviews.get(&"The Adventures of Sherlock Holmes").unwrap(), Some(String::from("Eye lyked it alot.")));
+        assert_eq!(book_reviews.get::<String>(&"The Adventures of Somebody Else").unwrap(), None);
 
         // Test replacement
-        assert_eq!(book_reviews.insert("Pride and Prejudice", "Very enjoyable.").unwrap(), None);
-        assert_eq!(book_reviews.insert("Pride and Prejudice", "Just terrible.").unwrap(), Some(String::from("Very enjoyable.")));
-        assert_eq!(book_reviews.get("Pride and Prejudice").unwrap(), Some(String::from("Just terrible.")));
+        assert_eq!(book_reviews.insert::<String>(&"Pride and Prejudice", &"Very enjoyable.").unwrap(), None);
+        assert_eq!(book_reviews.insert(&"Pride and Prejudice", &"Just terrible.").unwrap(), Some(String::from("Very enjoyable.")));
+        assert_eq!(book_reviews.get(&"Pride and Prejudice").unwrap(), Some(String::from("Just terrible.")));
 
         assert!(!book_reviews.is_empty().unwrap());
 
         assert_eq!(book_reviews.len().unwrap(), 4);
 
         // check for a specific one.
-        assert!(!book_reviews.contains_key("Les Misérables").unwrap());
+        assert!(!book_reviews.contains_key(&"Les Misérables").unwrap());
 
         // oops, this review has a lot of spelling mistakes, let's delete it.
-        assert_eq!(book_reviews.remove("The Adventures of Sherlock Holmes").unwrap(), Some(String::from("Eye lyked it alot.")));
-        assert_eq!(book_reviews.remove("The Adventures of Sherlock Holmes").unwrap(), None);
+        assert_eq!(book_reviews.remove(&"The Adventures of Sherlock Holmes").unwrap(), Some(String::from("Eye lyked it alot.")));
+        assert_eq!(book_reviews.remove::<String>(&"The Adventures of Sherlock Holmes").unwrap(), None);
 
         let x: Result<Vec<String>, Error> = book_reviews.keys().unwrap().collect();
         assert_eq!(x.unwrap(), ["Adventures of Huckleberry Finn", "Grimms' Fairy Tales", "Pride and Prejudice"]);
 
         assert_eq!(book_reviews.len().unwrap(), 3);
     }
-
-    use std::cmp::{PartialEq, Eq};
 
     #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
     struct Foo {
@@ -66,7 +64,7 @@ mod tests {
 
     impl ToSql for Foo {
         fn to_sql(&self) -> rusqlite::Result<ToSqlOutput> {
-            let string = serde_json::to_string(self).unwrap();
+            let string = serde_json::to_string(self).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
             Ok(ToSqlOutput::from(string))
         }
     }
@@ -85,14 +83,14 @@ mod tests {
     #[test]
     fn json_output() {
         let connection = Connection::open_in_memory().unwrap();
-        let mut book_reviews: SqliteMap<String, Foo, &str, Foo> = SqliteMap::new(&connection, "map", "TEXT", "TEXT").unwrap();
+        let mut book_reviews = SqliteMap::new(&connection, "map", "TEXT", "TEXT").unwrap();
         let foo = Foo{
             x: 8,
             y: String::from("This is a test string"),
         };
 
-        assert_eq!(book_reviews.insert("foo", foo.clone()).unwrap(), None);
-        assert_eq!(book_reviews.insert("foo", foo.clone()).unwrap(), Some(foo));
+        assert_eq!(book_reviews.insert::<Foo>(&"foo", &foo).unwrap(), None);
+        assert_eq!(book_reviews.insert(&"foo", &foo).unwrap(), Some(foo));
     }
 
     use std::io::prelude::*;
@@ -106,9 +104,9 @@ mod tests {
     impl ToSql for ZipFoo {
         fn to_sql(&self) -> rusqlite::Result<ToSqlOutput> {
             let mut e = ZlibEncoder::new(Vec::new(), Compression::default());
-            let string = serde_json::to_vec(self).unwrap();
-            e.write_all(&string);
-            Ok(ToSqlOutput::from(e.finish().unwrap()))
+            let string = serde_json::to_vec(self).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+            e.write_all(&string).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+            Ok(ToSqlOutput::from(e.finish().map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?))
         }
     }
 
@@ -118,7 +116,7 @@ mod tests {
             match value {
                 ValueRef::Blob(b) => {
                     let mut z = ZlibDecoder::new(b);
-                    z.read_to_string(&mut s);
+                    z.read_to_string(&mut s).map_err(|err| FromSqlError::Other(Box::new(err)))?;
                     serde_json::from_str(&s)
                 },
                 _ => return Err(FromSqlError::InvalidType),
@@ -129,13 +127,13 @@ mod tests {
     #[test]
     fn zip_json_output() {
         let connection = Connection::open_in_memory().unwrap();
-        let mut book_reviews: SqliteMap<String, ZipFoo, &str, ZipFoo> = SqliteMap::new(&connection, "map", "BLOB", "BLOB").unwrap();
-        let foo = Foo{
+        let mut book_reviews = SqliteMap::new(&connection, "map", "BLOB", "BLOB").unwrap();
+        let foo = ZipFoo(Foo{
             x: 8,
             y: String::from("This is a test string"),
-        };
+        });
 
-        assert_eq!(book_reviews.insert("foo", ZipFoo(foo.clone())).unwrap(), None);
-        assert_eq!(book_reviews.insert("foo", ZipFoo(foo.clone())).unwrap(), Some(ZipFoo(foo)));
+        assert_eq!(book_reviews.insert::<Foo>(&"foo", &foo).unwrap(), None);
+        assert_eq!(book_reviews.insert(&"foo", &foo).unwrap(), Some(foo));
     }
 }
