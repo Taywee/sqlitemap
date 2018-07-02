@@ -1,6 +1,6 @@
 [package]
 name = "sqlitemap"
-version = "0.0.1"
+version = "0.1.0"
 description = "An alternative map implementation, backed by a sqlite database"
 readme = "README.md"
 license-file = "LICENSE"
