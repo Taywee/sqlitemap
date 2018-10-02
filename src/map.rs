@@ -10,6 +10,8 @@ pub struct SqliteMap<'a> {
     select_value: Statement<'a>,
     select_key: Statement<'a>,
     select_keys: Statement<'a>,
+    select_values: Statement<'a>,
+    select_keys_values: Statement<'a>,
     delete_key: Statement<'a>,
     select_count: Statement<'a>,
     select_one: Statement<'a>,
@@ -27,6 +29,8 @@ impl<'a> SqliteMap<'a> {
         let select_value = connection.prepare(&format!("SELECT value FROM {} WHERE key=?", tablename))?;
         let select_key = connection.prepare(&format!("SELECT 1 FROM {} WHERE key=?", tablename))?;
         let select_keys = connection.prepare(&format!("SELECT key FROM {}", tablename))?;
+        let select_values = connection.prepare(&format!("SELECT value FROM {}", tablename))?;
+        let select_keys_values = connection.prepare(&format!("SELECT key, value FROM {}", tablename))?;
         let delete_key = connection.prepare(&format!("DELETE FROM {} WHERE key=?", tablename))?;
         let select_count = connection.prepare(&format!("SELECT COUNT(*) FROM {}", tablename))?;
         let select_one = connection.prepare(&format!("SELECT 1 FROM {}", tablename))?;
@@ -36,6 +40,8 @@ impl<'a> SqliteMap<'a> {
             select_value,
             select_key,
             select_keys,
+            select_values,
+            select_keys_values,
             delete_key,
             select_count,
             select_one,
@@ -69,6 +75,19 @@ impl<'a> SqliteMap<'a> {
         where R: FromSql {
 
         self.select_keys.query_map(&[], |row| row.get(0))
+    }
+
+    pub fn values<R>(&mut self) -> Result<MappedRows<impl FnMut(&Row) -> R>>
+        where R: FromSql {
+
+        self.select_values.query_map(&[], |row| row.get(0))
+    }
+
+    pub fn iter<K, V>(&mut self) -> Result<MappedRows<impl FnMut(&Row) -> (K, V)>>
+        where K: FromSql,
+              V: FromSql {
+
+        self.select_keys_values.query_map(&[], |row| (row.get(0), row.get(1)))
     }
 
     pub fn contains_key(&mut self, key: &ToSql) -> Result<bool> {

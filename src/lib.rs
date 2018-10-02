@@ -53,6 +53,15 @@ mod tests {
         let x: Result<Vec<String>, Error> = book_reviews.keys().unwrap().collect();
         assert_eq!(x.unwrap(), ["Adventures of Huckleberry Finn", "Grimms' Fairy Tales", "Pride and Prejudice"]);
 
+        let x: Result<Vec<String>, Error> = book_reviews.values().unwrap().collect();
+        assert_eq!(x.unwrap(), ["My favorite book.", "Masterpiece.", "Just terrible."]);
+
+        let x: Result<Vec<(String, String)>, Error> = book_reviews.iter().unwrap().collect();
+        assert_eq!(x.unwrap(), [
+           (String::from("Adventures of Huckleberry Finn"), String::from("My favorite book.")),
+           (String::from("Grimms' Fairy Tales"), String::from("Masterpiece.")),
+           (String::from("Pride and Prejudice"), String::from("Just terrible."))]);
+
         assert_eq!(book_reviews.len().unwrap(), 3);
     }
 
